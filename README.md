@@ -1,6 +1,13 @@
 # Automated Calibration Reports from CSVs
 
-Generates professional Word and PDF calibration reports from raw sensor data using the Claude AI API. Point it at a CSV, and it produces a formatted report with an AI-written summary, anomaly table, statistical breakdown, and calibration service notes.
+Generates professional Word and PDF calibration reports from raw sensor data using the Claude AI API. Point it at a CSV and it produces a formatted report with an AI-written summary, time-series graphs, anomaly detection, and calibration service notes.
+
+Works well for:
+
+- **Turbidimeters** — NTU readings, primary/secondary standard calibrations, optical component inspection
+- **Flow meters** — GPM readings, totalizer values (handles comma-formatted numbers like `1,024,200`), drift detection
+- **Temperature sensors** — readings displayed in °F, trend visualization over the logging period
+- **Multi-parameter instruments** — any numeric columns in the CSV are automatically picked up and graphed
 
 ---
 
