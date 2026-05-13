@@ -15,11 +15,16 @@ Report sections:
   8. Raw data appendix (optional)
 """
 
+import io
 import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import pandas as pd
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -61,6 +66,44 @@ def _get_numeric_cols(df: pd.DataFrame) -> list[str]:
     """Return all numeric sensor columns, excluding metadata fields."""
     skip = {"site_id", "instrument_id", "timestamp"}
     return [c for c in df.select_dtypes(include="number").columns if c not in skip]
+
+def _build_chart(df: pd.DataFrame, width_inches: float = 6.3) -> io.BytesIO:
+    """Render a time-series chart of all sensor columns and return a PNG buffer."""
+    display_df = _convert_units(df)
+    cols = _get_numeric_cols(display_df)
+
+    has_time = "timestamp" in display_df.columns
+    x = pd.to_datetime(display_df["timestamp"]) if has_time else display_df.index
+
+    n = len(cols)
+    fig, axes = plt.subplots(n, 1, figsize=(width_inches, max(2.2 * n, 3)), sharex=True)
+    if n == 1:
+        axes = [axes]
+
+    colours = ["#2E75B6", "#C00000", "#00B050", "#FFA500", "#7030A0",
+               "#00B0F0", "#FF0000", "#92D050", "#FF6600", "#4472C4"]
+
+    for ax, col, colour in zip(axes, cols, colours):
+        ax.plot(x, display_df[col], color=colour, linewidth=1.2, alpha=0.9)
+        ax.set_ylabel(col, fontsize=7, labelpad=4)
+        ax.tick_params(axis="y", labelsize=7)
+        ax.grid(True, linestyle="--", alpha=0.4)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    if has_time:
+        axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%d %b %H:%M"))
+        fig.autofmt_xdate(rotation=30, ha="right")
+
+    axes[-1].tick_params(axis="x", labelsize=7)
+    fig.suptitle("Sensor Readings Over Time", fontsize=9, fontweight="bold", y=1.01)
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf
 
 # Brand colours
 COLOUR_HEADER = RGBColor(0x1A, 0x57, 0x8A)   # Deep blue
@@ -113,7 +156,7 @@ class WordReportGenerator:
 
         self._add_header(doc, site_id, instrument_id, df, analysis_result)
         self._add_executive_summary(doc, analysis_result)
-        self._add_statistical_summary(doc, df)
+        self._add_sensor_chart(doc, df)
         self._add_anomalies(doc, analysis_result)
         self._add_calibration_service_notes(doc, analysis_result)
         self._add_footer_info(doc, technician_name)
@@ -213,46 +256,16 @@ class WordReportGenerator:
         doc.add_heading("Executive Summary", level=1)
         doc.add_paragraph(result.executive_summary or "No summary available.")
 
-    def _add_statistical_summary(self, doc: Document, df: pd.DataFrame):
-        doc.add_heading("Statistical Summary", level=1)
-
-        numeric_cols = _get_numeric_cols(df)
-        if not numeric_cols:
+    def _add_sensor_chart(self, doc: Document, df: pd.DataFrame):
+        doc.add_heading("Sensor Readings", level=1)
+        if not _get_numeric_cols(df):
             doc.add_paragraph("No numeric sensor data available.")
             return
-
-        display_df = _convert_units(df)
-        display_cols = [_display_col(c) for c in numeric_cols]
-
-        stats = display_df[[_display_col(c) for c in numeric_cols]].describe().loc[["mean", "min", "max", "std"]].round(2)
-        n_cols = len(numeric_cols) + 1
-
-        table = doc.add_table(rows=1 + len(stats), cols=n_cols)
-        table.style = "Table Grid"
-
-        # Header row
-        hdr_cells = table.rows[0].cells
-        hdr_cells[0].text = "Statistic"
-        self._shade_cell(hdr_cells[0], "2E75B6")
-        self._set_cell_font(hdr_cells[0], bold=True, colour="FFFFFF")
-
-        for i, col in enumerate(display_cols, start=1):
-            hdr_cells[i].text = col
-            self._shade_cell(hdr_cells[i], "2E75B6")
-            self._set_cell_font(hdr_cells[i], bold=True, colour="FFFFFF")
-
-        # Data rows
-        stat_labels = {"mean": "Mean", "min": "Minimum", "max": "Maximum", "std": "Std Dev"}
-        for r_idx, (stat_name, row) in enumerate(stats.iterrows(), start=1):
-            cells = table.rows[r_idx].cells
-            cells[0].text = stat_labels.get(stat_name, stat_name)
-            self._set_cell_font(cells[0], bold=True)
-            shade = "D9E8F5" if r_idx % 2 == 0 else "FFFFFF"
-            self._shade_cell(cells[0], shade)
-            for c_idx, col in enumerate(display_cols, start=1):
-                cells[c_idx].text = str(row[col])
-                self._shade_cell(cells[c_idx], shade)
-
+        chart_buf = _build_chart(df)
+        para = doc.add_paragraph()
+        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = para.add_run()
+        run.add_picture(chart_buf, width=Inches(6.3))
         doc.add_paragraph()
 
     def _add_anomalies(self, doc: Document, result: AnalysisResult):

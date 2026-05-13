@@ -7,16 +7,22 @@ using ReportLab's Platypus high-level layout engine.
 Mirrors the sections in word_report.py so both outputs stay in sync.
 """
 
+import io
 import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import pandas as pd
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
+from reportlab.lib.utils import ImageReader
 from reportlab.platypus import (
     SimpleDocTemplate,
     Paragraph,
@@ -57,6 +63,43 @@ def _convert_units(df):
 def _get_numeric_cols(df):
     skip = {"site_id", "instrument_id", "timestamp"}
     return [c for c in df.select_dtypes(include="number").columns if c not in skip]
+
+def _build_chart(df, width_inches=6.3):
+    """Render a time-series chart and return a PNG buffer."""
+    display_df = _convert_units(df)
+    cols = _get_numeric_cols(display_df)
+    has_time = "timestamp" in display_df.columns
+    x = pd.to_datetime(display_df["timestamp"]) if has_time else display_df.index
+
+    n = len(cols)
+    fig, axes = plt.subplots(n, 1, figsize=(width_inches, max(2.2 * n, 3)), sharex=True)
+    if n == 1:
+        axes = [axes]
+
+    colours = ["#2E75B6", "#C00000", "#00B050", "#FFA500", "#7030A0",
+               "#00B0F0", "#FF0000", "#92D050", "#FF6600", "#4472C4"]
+
+    for ax, col, colour in zip(axes, cols, colours):
+        ax.plot(x, display_df[col], color=colour, linewidth=1.2, alpha=0.9)
+        ax.set_ylabel(col, fontsize=7, labelpad=4)
+        ax.tick_params(axis="y", labelsize=7)
+        ax.grid(True, linestyle="--", alpha=0.4)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    if has_time:
+        axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%d %b %H:%M"))
+        fig.autofmt_xdate(rotation=30, ha="right")
+
+    axes[-1].tick_params(axis="x", labelsize=7)
+    fig.suptitle("Sensor Readings Over Time", fontsize=9, fontweight="bold", y=1.01)
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 BLUE_DARK = colors.HexColor("#1A578A")
@@ -127,7 +170,7 @@ class PDFReportGenerator:
         story = []
         story += self._header_section(site_id, instrument_id, df, analysis_result)
         story += self._executive_summary_section(analysis_result)
-        story += self._statistical_summary_section(df)
+        story += self._sensor_chart_section(df)
         story += self._anomalies_section(analysis_result)
         story += self._calibration_service_notes_section(analysis_result)
         story += self._sign_off_section(technician_name)
@@ -217,42 +260,19 @@ class PDFReportGenerator:
         elems.append(Spacer(1, 0.2 * inch))
         return elems
 
-    def _statistical_summary_section(self, df):
-        elems = [Paragraph("Statistical Summary", self.styles["SectionHeading"]),
+    def _sensor_chart_section(self, df):
+        elems = [Paragraph("Sensor Readings", self.styles["SectionHeading"]),
                  HRFlowable(width="100%", thickness=1, color=BLUE_MID, spaceAfter=6)]
-
-        numeric_cols = _get_numeric_cols(df)
-        if not numeric_cols:
+        if not _get_numeric_cols(df):
             elems.append(Paragraph("No numeric sensor data available.", self.styles["BodyText"]))
             elems.append(Spacer(1, 0.2 * inch))
             return elems
-
-        display_df = _convert_units(df)
-        display_cols = [_display_col(c) for c in numeric_cols]
-        stats = display_df[display_cols].describe().loc[["mean", "min", "max", "std"]].round(2)
-
-        data = [["Statistic"] + display_cols]
-        stat_label_map = {"mean": "Mean", "min": "Minimum", "max": "Maximum", "std": "Std Dev"}
-        for stat_name, row in stats.iterrows():
-            data.append([stat_label_map.get(stat_name, stat_name)] + [str(v) for v in row.values])
-
-        col_width = (6.5 * inch) / len(data[0])
-        tbl = Table(data, colWidths=[col_width] * len(data[0]))
-        tbl.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), BLUE_MID),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 9),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [BLUE_LIGHT, colors.white]),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 6),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ]))
-        elems.append(tbl)
+        chart_buf = _build_chart(df, width_inches=6.3)
+        img_w, img_h = ImageReader(chart_buf).getSize()
+        display_w = 6.3 * inch
+        display_h = min(display_w * (img_h / img_w), 5.8 * inch)  # cap to fit page
+        chart_buf.seek(0)
+        elems.append(Image(chart_buf, width=display_w, height=display_h))
         elems.append(Spacer(1, 0.2 * inch))
         return elems
 
