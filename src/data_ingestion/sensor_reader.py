@@ -134,7 +134,22 @@ class SensorDataReader:
 
     def _load_csv(self) -> pd.DataFrame:
         logger.debug("Reading CSV: %s", self.file_path)
-        return pd.read_csv(self.file_path, parse_dates=["timestamp"])
+        # Read without type inference first so quoted numbers like "15,036" come in as strings
+        df = pd.read_csv(self.file_path, parse_dates=["timestamp"], dtype=str)
+        skip = {"site_id", "instrument_id", "timestamp"}
+        for col in df.columns:
+            if col in skip:
+                continue
+            # Strip commas (thousands separators) and try converting to numeric
+            cleaned = df[col].astype(str).str.replace(",", "", regex=False).str.strip()
+            numeric = pd.to_numeric(cleaned, errors="coerce")
+            # Only convert if the majority of values parsed successfully
+            if numeric.notna().mean() >= 0.5:
+                df[col] = numeric
+        # Re-parse timestamp in case dtype=str blocked it
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        return df
 
     def _load_json(self) -> pd.DataFrame:
         logger.debug("Reading JSON: %s", self.file_path)
