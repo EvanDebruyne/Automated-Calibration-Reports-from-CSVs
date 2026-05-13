@@ -66,13 +66,15 @@ def _get_numeric_cols(df):
 
 def _build_chart(df, width_inches=6.3):
     """Render a time-series chart and return a PNG buffer."""
+    import matplotlib.ticker as ticker
+
     display_df = _convert_units(df)
     cols = _get_numeric_cols(display_df)
     has_time = "timestamp" in display_df.columns
     x = pd.to_datetime(display_df["timestamp"]) if has_time else display_df.index
 
     n = len(cols)
-    fig, axes = plt.subplots(n, 1, figsize=(width_inches, max(2.2 * n, 3)), sharex=True)
+    fig, axes = plt.subplots(n, 1, figsize=(width_inches, max(2.4 * n, 3)), sharex=True)
     if n == 1:
         axes = [axes]
 
@@ -87,8 +89,13 @@ def _build_chart(df, width_inches=6.3):
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
 
+        # Always use plain comma-formatted numbers — never scientific notation
+        ax.yaxis.set_major_formatter(ticker.FuncFormatter(
+            lambda val, _: f"{val:,.0f}" if abs(val) >= 1 else f"{val:.3f}"
+        ))
+
     if has_time:
-        axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%d %b %H:%M"))
+        axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
         fig.autofmt_xdate(rotation=30, ha="right")
 
     axes[-1].tick_params(axis="x", labelsize=7)
